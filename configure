@@ -18,8 +18,8 @@ echo >&2 "-- Configuring Coqrel"
 echo >&2 "-- Pre-building Coqrel"
 (cd coqrel; make)
 
-echo >&2 "-- Configuring CompCert"
-(cd compcert; ./configure -coqrel ../coqrel x86_64-linux)
+#echo >&2 "-- Configuring CompCert"
+#(cd compcert; ./configure -coqrel ../coqrel x86_64-linux)
 
 echo >&2 "-- Creating Makefile"
 coq_makefile -f _CoqProject -o Makefile
