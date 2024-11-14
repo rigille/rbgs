@@ -58,7 +58,7 @@ Definition L_game : CALspec game_sig game_state :=
     match m with
       | pick =>
         (* For any nat n between 1-100, make that our secret *)
-        sup {n : nat | n <= 100}, ISpec.ret (tt, n)
+        inf {n : nat | n <= 100}, ISpec.ret (tt, n)
       | guess g =>
         ISpec.ret (Nat.compare n g, n) 
     end.
