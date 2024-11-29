@@ -10,7 +10,6 @@ Require Import models.IntSpec.
 
 Import ISpec.
 
-
 (** * Preliminaries *)
 
 Infix "~>" := ISpec.subst (at level 99).
@@ -63,6 +62,100 @@ Definition L_game : CALspec game_sig game_state :=
         ISpec.ret (Nat.compare n g, n) 
     end.
 
+(** ** Keeping track of state *)
+
+(** To interpret layer interfaces as morphisms in our category of
+  effect signatures and substitution specifications, we use the
+  following signature which adjoins a state in [S] to the operations
+  and arities of the signature [E]. This is written [E@S] in the paper
+  but since I plan on using [@] for composition I use [E#S] here. *)
+
+Inductive state_sig (E : Type -> Type) (S : Type) : Type -> Type :=
+  | st {ar} (m : E ar) (k : S) : state_sig E S (ar * S).
+
+Arguments st {E S ar} m k.
+
+Infix "#" := state_sig (at level 40, left associativity).
+
+(** * Layer interfaces and implementations as morphisms *)
+
+
+(** A layer interface can then be promoted to a morphism as follows. *)
+
+Coercion CALspec_mor {E S} (L : CALspec E S) : (0 ~> E # S) :=
+  fun _ '(st m s) => L _ m s.
+
+(** To connect this with layer implementations, we must lift a
+  state-free morphism [M : E ~> F] to a corresponding stateful
+  morphism [E#S ~> F#S] which passes the state around unchanged. *)
+
+Fixpoint stateful_play {E S A} (k: S) (s: ISpec.play E A): ispec (E#S) (A*S) :=
+  match s with
+    | ISpec.pret v => FCD.emb (ISpec.pret (v, k))
+    | ISpec.pmove m => FCD.emb (ISpec.pmove (st m k))
+    | ISpec.pcons m n t =>
+      sup x : option S,
+      match x with
+      | Some k' => FCD.map (ISpec.pcons (st m k) (n, k')) (stateful_play k' t)
+      | None => FCD.emb (ISpec.pmove (st m k))
+      end
+  end.
+
+Definition srun {E S A} (k : S) (x : ispec E A) : ispec (E # S) (prod A S) :=
+  FCD.ext (stateful_play k) x.
+
+Definition slift {E F S} (σ : E ~> F) : E#S ~> F#S :=
+  fun ar m =>
+    match m with st m k => srun k (σ _ m) end.
+
+Notation "x / f" := (ISpec.apply f x).
+
+Lemma srun_bind {E S A B} (k : S) (f : A -> ispec E B) (x : ispec E A) :
+  srun k (ISpec.bind f x) = ISpec.bind (fun '(a, k') => srun k' (f a)) (srun k x).
+Admitted.
+
+Lemma srun_int {E S ar} (k : S) (m : E ar) :
+  srun k (ISpec.int m) = ISpec.int (st m k).
+Admitted.
+
+Lemma assert_true {E} {P : Prop} (H : P) :
+  @assert E P = ISpec.ret tt.
+Proof.
+  unfold assert.
+  apply antisymmetry.
+  - apply sup_lub. reflexivity.
+  - apply (sup_at H). reflexivity.
+Qed.
+
+(** ** Rewriting tactic *)
+
+Hint Rewrite
+  @bind_ret_l
+  @bind_ret_r
+  @bind_bind
+  @apply_ret
+  @apply_bind
+  @apply_int_l
+  @apply_int_r
+  @srun_bind
+  @srun_int
+  : intm.
+
+Hint Rewrite @assert_true using solve [auto] : intm.
+
+Ltac intm :=
+  repeat progress (autorewrite with intm; cbn).
+
+Example layer_behavior0 : srun 73 (ISpec.int (guess 50)) / L_game = ISpec.ret (Gt, 73).
+Proof.
+  intm. reflexivity.
+Qed.
+
+Example layer_behavior1 : srun 73 (ISpec.int pick) / L_game [= ISpec.ret (tt, 73).
+Proof.
+  intm. Check inf_lb. assert (73 <= 100) by lia. apply inf_lb with (i := exist (fun n => n <= 100) 73 H) (x := fun n => ret (tt, proj1_sig n)).
+Qed.
+
 (**
 Definition rb_state : Type :=
   (nat -> val) * nat * nat.
@@ -108,20 +201,6 @@ Definition Layer_device : CALspec device_signature device_state :=
 
 (** * Layer interfaces and implementations as morphisms *)
 
-(** ** Keeping track of state *)
-
-(** To interpret layer interfaces as morphisms in our category of
-  effect signatures and substitution specifications, we use the
-  following signature which adjoins a state in [S] to the operations
-  and arities of the signature [E]. This is written [E@S] in the paper
-  but since I plan on using [@] for composition I use [E#S] here. *)
-
-Inductive state_sig (E : Type -> Type) (S : Type) : Type -> Type :=
-  | st {ar} (m : E ar) (k : S) : state_sig E S (ar * S).
-
-Arguments st {E S ar} m k.
-
-Infix "#" := state_sig (at level 40, left associativity).
 
 (** A layer interface can then be promoted to a morphism as follows. *)
 
@@ -157,14 +236,6 @@ Proof.
     unfold FCD.map. repeat rstep. auto.
 Qed.
 
-Definition srun {E S A} (k : S) (x : ispec E A) : ispec (E # S) (prod A S) :=
-  FCD.ext (stateful_play k) x.
-
-Definition slift {E F S} (σ : E ~> F) : E#S ~> F#S :=
-  fun ar m =>
-    match m with st m k => srun k (σ _ m) end.
-
-Notation "x / f" := (ISpec.apply f x).
 Infix "@" := ISpec.compose (at level 40, left associativity).
 
 (** Then the behavior of [M : E ~> F] running on top of [L : 0 ~> E#S]
@@ -201,41 +272,6 @@ Proof.
            ++ repeat setoid_rewrite FCD.ext_ana. cbn.
 Admitted.
 
-Lemma srun_bind {E S A B} (k : S) (f : A -> ispec E B) (x : ispec E A) :
-  srun k (ISpec.bind f x) = ISpec.bind (fun '(a, k') => srun k' (f a)) (srun k x).
-Admitted.
-
-Lemma srun_int {E S ar} (k : S) (m : E ar) :
-  srun k (ISpec.int m) = ISpec.int (st m k).
-Admitted.
-
-Lemma assert_true {E} {P : Prop} (H : P) :
-  @assert E P = ISpec.ret tt.
-Proof.
-  unfold assert.
-  apply antisymmetry.
-  - apply sup_lub. reflexivity.
-  - apply (sup_at H). reflexivity.
-Qed.
-
-(** ** Rewriting tactic *)
-
-Hint Rewrite
-  @bind_ret_l
-  @bind_ret_r
-  @bind_bind
-  @apply_ret
-  @apply_bind
-  @apply_int_l
-  @apply_int_r
-  @srun_bind
-  @srun_int
-  : intm.
-
-Hint Rewrite @assert_true using solve [auto] : intm.
-
-Ltac intm :=
-  repeat progress (autorewrite with intm; cbn).
 
 (** ** Example *)
 
