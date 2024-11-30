@@ -285,6 +285,9 @@ Admitted.
 
 (** ** Simulation relations as morphisms *)
 
+(* TODO: How are simulation relations morphisms?
+   does this implies lockstep simulation? *)
+
 Definition srel_push {E S1 S2} (R : rel S1 S2) : E#S2 ~> E#S1 :=
   fun _ '(st m k1) =>
     sup {k2 | R k1 k2}, ISpec.int (st m k2) >>= fun '(n, k2') =>
@@ -294,6 +297,9 @@ Definition srel_pull {E S1 S2} (R : rel S1 S2) : E#S1 ~> E#S2 :=
   fun _ '(st m k2) =>
     inf {k1 | R k1 k2}, ISpec.int (st m k1) >>= fun '(n, k1') =>
     sup {k2' | R k1' k2'}, ISpec.ret (n, k2').
+
+(* TODO: How can we use a simulation relation to translate properties
+   of the overlay into properties of the underlay? *)
 
 Lemma srel_push_pull {E S1 S2} (R : rel S1 S2) (σ : 0 ~> E#S2) (τ : 0 ~> E#S1) :
   srel_push R @ σ [= τ <-> σ [= srel_pull R @ τ.

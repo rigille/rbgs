@@ -62,6 +62,16 @@ Definition L_game : CALspec game_sig game_state :=
         ISpec.ret (Nat.compare n g, n) 
     end.
 
+Definition L_game_specific : CALspec game_sig game_state :=
+  fun ar m n =>
+    match m with
+      | pick =>
+        (* For any nat n between 1-100, make that our secret *)
+        ISpec.ret (tt, 73)
+      | guess g =>
+        ISpec.ret (Nat.compare n g, n) 
+    end.
+
 (** ** Keeping track of state *)
 
 (** To interpret layer interfaces as morphisms in our category of
@@ -153,7 +163,59 @@ Qed.
 
 Example layer_behavior1 : srun 73 (ISpec.int pick) / L_game [= ISpec.ret (tt, 73).
 Proof.
-  intm. Check inf_lb. assert (73 <= 100) by lia. apply inf_lb with (i := exist (fun n => n <= 100) 73 H) (x := fun n => ret (tt, proj1_sig n)).
+  intm. assert (73 <= 100) by lia. apply inf_lb with (i := exist (fun n => n <= 100) 73 H) (x := fun n => ret (tt, proj1_sig n)).
+Qed.
+
+Infix "@" := ISpec.compose (at level 40, left associativity).
+
+(** Then the behavior of [M : E ~> F] running on top of [L : 0 ~> E#S]
+  can be computed as follows. *)
+
+Definition layer {E F S} (M : E ~> F) (L : 0 ~> E#S) : 0 ~> F#S :=
+  ISpec.compose (slift M) L.
+
+(** * Data refinement *)
+
+(** ** Simulation relations as morphisms *)
+
+Definition srel_push {E S1 S2} (R : rel S1 S2) : E#S2 ~> E#S1 :=
+  fun _ '(st m k1) =>
+    sup {k2 | R k1 k2}, ISpec.int (st m k2) >>= fun '(n, k2') =>
+    inf {k1' | R k1' k2'}, ISpec.ret (n, k1').
+
+Definition srel_pull {E S1 S2} (R : rel S1 S2) : E#S1 ~> E#S2 :=
+  fun _ '(st m k2) =>
+    inf {k1 | R k1 k2}, ISpec.int (st m k1) >>= fun '(n, k1') =>
+    sup {k2' | R k1' k2'}, ISpec.ret (n, k2').
+
+Lemma srel_push_pull {E S1 S2} (R : rel S1 S2) (σ : 0 ~> E#S2) (τ : 0 ~> E#S1) :
+  srel_push R @ σ [= τ <-> σ [= srel_pull R @ τ.
+Proof.
+  split.
+  - intros H _ [ar m k2]. unfold srel_pull, compose.
+    unfold finf. rewrite Upset.Inf.mor. eapply inf_glb. intros [k1 Hk]. intm.
+    specialize (H _ (st m k1)). unfold srel_push, compose in H. rewrite <- H.
+    unfold fsup. rewrite !Downset.Sup.mor. apply (sup_at (exist _ k2 Hk)). intm.
+    destruct (FCD.meet_join_dense (σ _ (st m k2))) as (I & J & c & Hc).
+    rewrite Hc. clear.
+    rewrite !Upset.Inf.mor. apply inf_glb. intros i. apply (inf_at i).
+    rewrite !Downset.Sup.mor. apply sup_lub. intros j. apply (sup_at j).
+    destruct (c i j) as [[v k2'] | | ] eqn:Hcij; try tauto.
+    setoid_rewrite bind_ret_r.
+    unfold finf. rewrite !Upset.Inf.mor. apply inf_glb. intros [k1' Hk']. intm.
+    rewrite Downset.Sup.mor. apply (sup_at (exist _ k2' Hk')). intm.
+    reflexivity.
+  - admit.
+Admitted.
+
+(* a specific choice of number implements the guessing game *)
+Lemma bq_rb_correct :
+  L_game [= L_game_specific.
+Proof.
+  intros _ [ar m q]. cbn.
+  unfold L_game, L_game_specific. destruct m.
+  - assert (73 <= 100) by lia. apply inf_lb with (i := exist (fun n => n <= 100) 73 H) (x := fun n => ret (tt, proj1_sig n)).
+  - reflexivity.
 Qed.
 
 (**
@@ -178,27 +240,6 @@ Definition L_rb : CALspec rb_sig rb_state :=
         ISpec.ret (c2, (f, c1, (S c2) mod N))
     end.
 
-(* My asynchronous device *)
-
-Inductive device_signature : esig :=
-  | send (v : val) : device_signature unit
-  | receive : device_signature val.
-
-Definition device_state : Type :=
-  bool * bool * val.
-
-Definition Layer_device : CALspec device_signature device_state :=
-  fun ar m '(ready, acknowledge, payload) =>
-    match m with
-      | send v =>
-        _ <- assert (E:=0) (ready = acknowledge);
-        ISpec.ret (tt, (negb ready, acknowledge, v))
-
-      | receive =>
-        _ <- assert (E:=0) (ready = negb acknowledge);
-        ISpec.ret (payload, (ready, negb acknowledge, payload))
-    end.
-
 (** * Layer interfaces and implementations as morphisms *)
 
 
@@ -210,18 +251,6 @@ Coercion CALspec_mor {E S} (L : CALspec E S) : (0 ~> E # S) :=
 (** To connect this with layer implementations, we must lift a
   state-free morphism [M : E ~> F] to a corresponding stateful
   morphism [E#S ~> F#S] which passes the state around unchanged. *)
-
-Fixpoint stateful_play {E S A} (k: S) (s: ISpec.play E A): ispec (E#S) (A*S) :=
-  match s with
-    | ISpec.pret v => FCD.emb (ISpec.pret (v, k))
-    | ISpec.pmove m => FCD.emb (ISpec.pmove (st m k))
-    | ISpec.pcons m n t =>
-      sup x : option S,
-      match x with
-      | Some k' => FCD.map (ISpec.pcons (st m k) (n, k')) (stateful_play k' t)
-      | None => FCD.emb (ISpec.pmove (st m k))
-      end
-  end.
 
 Instance stateful_play_mor E S A k :
   PosetMorphism (@stateful_play E S A k).
@@ -235,14 +264,6 @@ Proof.
   - apply sup_lub. intro x. apply (sup_at x). repeat rstep.
     unfold FCD.map. repeat rstep. auto.
 Qed.
-
-Infix "@" := ISpec.compose (at level 40, left associativity).
-
-(** Then the behavior of [M : E ~> F] running on top of [L : 0 ~> E#S]
-  can be computed as follows. *)
-
-Definition layer {E F S} (M : E ~> F) (L : 0 ~> E#S) : 0 ~> F#S :=
-  ISpec.compose (slift M) L.
 
 (** ** Properties *)
 
@@ -296,39 +317,6 @@ Qed.
   [L_bq] with a particular simulation relation between the abstract
   states of the overlay and underlay. Stay tuned... *)
 
-(** * Data refinement *)
-
-(** ** Simulation relations as morphisms *)
-
-Definition srel_push {E S1 S2} (R : rel S1 S2) : E#S2 ~> E#S1 :=
-  fun _ '(st m k1) =>
-    sup {k2 | R k1 k2}, ISpec.int (st m k2) >>= fun '(n, k2') =>
-    inf {k1' | R k1' k2'}, ISpec.ret (n, k1').
-
-Definition srel_pull {E S1 S2} (R : rel S1 S2) : E#S1 ~> E#S2 :=
-  fun _ '(st m k2) =>
-    inf {k1 | R k1 k2}, ISpec.int (st m k1) >>= fun '(n, k1') =>
-    sup {k2' | R k1' k2'}, ISpec.ret (n, k2').
-
-Lemma srel_push_pull {E S1 S2} (R : rel S1 S2) (σ : 0 ~> E#S2) (τ : 0 ~> E#S1) :
-  srel_push R @ σ [= τ <-> σ [= srel_pull R @ τ.
-Proof.
-  split.
-  - intros H _ [ar m k2]. unfold srel_pull, compose.
-    unfold finf. rewrite Upset.Inf.mor. eapply inf_glb. intros [k1 Hk]. intm.
-    specialize (H _ (st m k1)). unfold srel_push, compose in H. rewrite <- H.
-    unfold fsup. rewrite !Downset.Sup.mor. apply (sup_at (exist _ k2 Hk)). intm.
-    destruct (FCD.meet_join_dense (σ _ (st m k2))) as (I & J & c & Hc).
-    rewrite Hc. clear.
-    rewrite !Upset.Inf.mor. apply inf_glb. intros i. apply (inf_at i).
-    rewrite !Downset.Sup.mor. apply sup_lub. intros j. apply (sup_at j).
-    destruct (c i j) as [[v k2'] | | ] eqn:Hcij; try tauto.
-    setoid_rewrite bind_ret_r.
-    unfold finf. rewrite !Upset.Inf.mor. apply inf_glb. intros [k1' Hk']. intm.
-    rewrite Downset.Sup.mor. apply (sup_at (exist _ k2' Hk')). intm.
-    reflexivity.
-  - admit.
-Admitted.
 
 (** ** Correctness of [M_bq] *)
 
